@@ -1,3 +1,5 @@
+import requests
+
 from scraper_pipeline.config import Settings
 from scraper_pipeline.fetch import HttpFetcher, RateLimiter
 
@@ -19,9 +21,11 @@ class FakeSession:
         self._robots_status = robots_status
         self._robots_text = robots_text
         self.requested_urls: list[str] = []
+        self.calls: list[dict] = []
 
     def get(self, url: str, **kwargs: object) -> FakeResponse:
         self.requested_urls.append(url)
+        self.calls.append({"url": url, **kwargs})
         if url.endswith("/robots.txt"):
             return FakeResponse(self._robots_status, self._robots_text)
         item = self._pages.pop(0)
@@ -114,3 +118,47 @@ def test_rate_limiter_sleeps_between_requests():
 
     assert len(slept) == 1
     assert 0 < slept[0] <= 5.0
+
+
+def test_fetch_omits_proxies_when_pool_is_empty():
+    session = FakeSession([FakeResponse(200, "ok")])
+    make_fetcher(make_settings(), session).fetch("https://example.com/a")
+
+    assert "proxies" not in session.calls[0]
+
+
+def test_fetch_rotates_proxy_after_connection_error():
+    session = FakeSession([requests.ConnectionError("proxy down"), FakeResponse(200, "ok")])
+    settings = make_settings(proxy_urls=("http://proxy-a.local:8080", "http://proxy-b.local:8080"))
+    fetcher = HttpFetcher(settings, session=session, sleep=lambda _seconds: None)
+
+    result = fetcher.fetch("https://example.com/a")
+
+    assert result.ok is True
+    assert result.attempts == 2
+    assert result.proxy == "http://proxy-b.local:8080"
+    assert session.calls[0]["proxies"] == {
+        "http": "http://proxy-a.local:8080",
+        "https": "http://proxy-a.local:8080",
+    }
+    assert session.calls[1]["proxies"] == {
+        "http": "http://proxy-b.local:8080",
+        "https": "http://proxy-b.local:8080",
+    }
+
+    stats = {entry["proxy"]: entry for entry in fetcher.proxy_pool.stats()}
+    assert stats["http://proxy-a.local:8080"]["failures"] == 1
+    assert stats["http://proxy-b.local:8080"]["successes"] == 1
+
+
+def test_fetch_uses_same_proxy_for_retryable_status_until_failure():
+    session = FakeSession([FakeResponse(503), FakeResponse(200, "ok")])
+    settings = make_settings(proxy_urls=("http://proxy-a.local:8080",))
+    fetcher = HttpFetcher(settings, session=session, sleep=lambda _seconds: None)
+
+    result = fetcher.fetch("https://example.com/a")
+
+    assert result.ok is True
+    stats = fetcher.proxy_pool.stats()[0]
+    assert stats["failures"] == 1
+    assert stats["successes"] == 1

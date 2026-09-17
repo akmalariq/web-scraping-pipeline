@@ -120,6 +120,7 @@ def run_pipeline(
         warehouse.close()
 
     metrics.finish()
+    metrics.proxy_stats = fetcher.proxy_pool.stats()
     report_path = metrics.write(settings.runs_dir)
     log.info(
         "run_finished",

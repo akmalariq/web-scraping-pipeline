@@ -61,6 +61,7 @@ class RunMetrics:
     items_parsed: int = 0
     items_loaded: int = 0
     errors: list[dict] = field(default_factory=list)
+    proxy_stats: list[dict] = field(default_factory=list)
 
     def record_error(self, url: str, error: str) -> None:
         self.errors.append({"url": url, "error": error})

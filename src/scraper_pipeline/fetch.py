@@ -14,6 +14,7 @@ from urllib.robotparser import RobotFileParser
 import requests
 
 from scraper_pipeline.config import Settings
+from scraper_pipeline.proxies import ProxyPool
 
 RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 
@@ -29,6 +30,7 @@ class FetchResult:
     attempts: int = 0
     elapsed_seconds: float = 0.0
     error: str | None = None
+    proxy: str | None = None
 
 
 class RateLimiter:
@@ -94,6 +96,7 @@ class HttpFetcher:
         settings: Settings,
         session: Any | None = None,
         sleep=time.sleep,
+        proxy_pool: ProxyPool | None = None,
     ) -> None:
         self.settings = settings
         self.session = session or requests.Session()
@@ -101,6 +104,11 @@ class HttpFetcher:
         self._limiter = RateLimiter(settings.min_delay_seconds, sleep=sleep)
         self._robots = RobotsCache(self.session, settings.user_agents[0], settings.timeout_seconds)
         self._agents = itertools.cycle(settings.user_agents)
+        self.proxy_pool = proxy_pool or ProxyPool(
+            settings.proxy_urls,
+            max_consecutive_failures=settings.proxy_max_failures,
+            cooldown_seconds=settings.proxy_cooldown_seconds,
+        )
 
     def _headers(self) -> dict[str, str]:
         return {
@@ -125,13 +133,21 @@ class HttpFetcher:
         status: int | None = None
 
         for attempt in range(1, self.settings.max_retries + 1):
+            proxy = self.proxy_pool.acquire()
             self._limiter.wait(host)
+            request_kwargs: dict[str, Any] = {
+                "headers": self._headers(),
+                "timeout": self.settings.timeout_seconds,
+            }
+            if proxy:
+                request_kwargs["proxies"] = {"http": proxy, "https": proxy}
+
             try:
-                response = self.session.get(
-                    url, headers=self._headers(), timeout=self.settings.timeout_seconds
-                )
+                response = self.session.get(url, **request_kwargs)
                 status = response.status_code
                 if status == 200:
+                    if proxy:
+                        self.proxy_pool.report_success(proxy)
                     return FetchResult(
                         url=url,
                         ok=True,
@@ -139,8 +155,11 @@ class HttpFetcher:
                         text=response.text,
                         attempts=attempt,
                         elapsed_seconds=time.monotonic() - start,
+                        proxy=proxy,
                     )
                 if status not in RETRYABLE_STATUS:
+                    if proxy:
+                        self.proxy_pool.report_success(proxy)
                     return FetchResult(
                         url=url,
                         ok=False,
@@ -148,10 +167,15 @@ class HttpFetcher:
                         attempts=attempt,
                         elapsed_seconds=time.monotonic() - start,
                         error=f"unexpected status {status}",
+                        proxy=proxy,
                     )
                 last_error = f"retryable status {status}"
+                if proxy:
+                    self.proxy_pool.report_failure(proxy)
             except requests.RequestException as exc:
                 last_error = f"{type(exc).__name__}: {exc}"
+                if proxy:
+                    self.proxy_pool.report_failure(proxy)
 
             if attempt < self.settings.max_retries:
                 self._sleep(self._backoff(attempt))

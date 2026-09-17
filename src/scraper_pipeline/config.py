@@ -28,6 +28,15 @@ class Settings:
     backoff_base_seconds: float = 0.5
     timeout_seconds: float = float(os.environ.get("SCRAPER_TIMEOUT", "15"))
     respect_robots: bool = os.environ.get("SCRAPER_RESPECT_ROBOTS", "1") != "0"
+    proxy_urls: tuple[str, ...] = field(
+        default_factory=lambda: tuple(
+            url.strip()
+            for url in os.environ.get("SCRAPER_PROXIES", "").split(",")
+            if url.strip()
+        )
+    )
+    proxy_max_failures: int = int(os.environ.get("SCRAPER_PROXY_MAX_FAILURES", "3"))
+    proxy_cooldown_seconds: float = float(os.environ.get("SCRAPER_PROXY_COOLDOWN", "60"))
 
     @property
     def warehouse_path(self) -> Path:

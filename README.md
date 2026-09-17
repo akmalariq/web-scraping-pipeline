@@ -41,13 +41,14 @@ monitoring.py   → JSON logs + data/runs/<run_id>.json metrics
 |---|---|
 | Politeness | `robots.txt` enforcement per host, minimum delay per host, `From` header with contact |
 | Reliability | Retry on 429/5xx and connection errors, exponential backoff with jitter, timeouts |
+| Proxy rotation | Round-robin pool with per-proxy health tracking, automatic quarantine after repeated failures, and direct-connection fallback when every proxy is cooling down |
 | Scale hygiene | Rotating user agents, deduplication by natural key, idempotent warehouse upsert |
 | Dynamic pages | Playwright headless rendering with selector waits for JavaScript targets |
 | Data contract | One normalized item schema across heterogeneous sources |
 | Storage | Parquet per run plus a DuckDB warehouse with a primary key on `natural_key` |
 | Orchestration | Dagster asset with a retry policy and a daily schedule (Asia/Jakarta) |
 | Observability | Structured JSON logs, per-run metrics (pages, items, failures), run report JSON |
-| Quality gates | 30 unit tests on fixtures, ruff lint, GitHub Actions CI with no network needed |
+| Quality gates | Unit tests on fixtures, ruff lint, GitHub Actions CI with no network needed |
 
 ## Data contract
 
@@ -79,6 +80,31 @@ Example output:
   "items_loaded": 30,
   "warehouse": "data/warehouse.duckdb"
 }
+```
+
+## Configuration
+
+All settings are environment variables, so the same image runs in every environment.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `SCRAPER_DATA_DIR` | `data` | Warehouse, Parquet, and run-report location |
+| `SCRAPER_PROXIES` | empty | Comma-separated proxy URLs; empty means direct connection |
+| `SCRAPER_PROXY_MAX_FAILURES` | `3` | Consecutive failures before a proxy is quarantined |
+| `SCRAPER_PROXY_COOLDOWN` | `60` | Seconds a quarantined proxy is skipped |
+| `SCRAPER_MIN_DELAY` | `1.0` | Minimum seconds between requests to the same host |
+| `SCRAPER_MAX_RETRIES` | `3` | Attempts per URL |
+| `SCRAPER_TIMEOUT` | `15` | Per-request timeout in seconds |
+| `SCRAPER_RESPECT_ROBOTS` | `1` | Set `0` to skip robots.txt checks |
+| `SCRAPER_CONTACT` | author email | Sent as the `From` header |
+
+Proxy failover is observable: every run report includes per-proxy successes, failures,
+consecutive failures, and whether the proxy is currently cooling down.
+
+```bash
+SCRAPER_PROXIES="http://user:pass@proxy-a:8080,http://user:pass@proxy-b:8080" \
+SCRAPER_PROXY_MAX_FAILURES=2 \
+  uv run scrape run --site books
 ```
 
 ## Orchestration
@@ -122,7 +148,6 @@ neither appropriate nor what this repository is for.
 
 ## Roadmap
 
-- Per-request proxy rotation behind a config flag, with health tracking
 - Mobile API inspection lab against an app the author owns, using mitmproxy on a local device
 - Prometheus metrics endpoint and alerting on scrape success rate
 - Incremental change detection (only write rows whose content hash changed)
